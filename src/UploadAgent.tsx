@@ -41,6 +41,9 @@ const UploadAgent: React.FC = () => {
 
         <div style={{ marginTop: 12 }}>
           <button onClick={handleSubmit} style={{ padding: '8px 12px', background: '#06b6d4', color: 'white', border: 'none', borderRadius: 6 }}>Encrypt and Upload</button>
+          <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+            Note: the file's symmetric key is saved to Lit for access control. If Lit save fails during publishing, the uploader must retry — no raw keys are stored locally.
+          </div>
         </div>
       </div>
     </div>

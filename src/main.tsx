@@ -22,6 +22,31 @@ const config = getDefaultConfig({
 
 const queryClient = new QueryClient();
 
+// DEV: suppress noisy analytics errors from wallet SDKs (e.g., cca-lite.coinbase.com blocked by adblockers)
+// This is a local convenience only; do not use in production logging.
+(() => {
+  const originalWarn = console.warn.bind(console);
+  console.warn = (...args: any[]) => {
+    try {
+      const joined = args.map(a => String(a)).join(' ');
+      if (joined.includes('cca-lite.coinbase.com') || joined.includes('Analytics SDK: TypeError: Failed to fetch')) return;
+    } catch (e) {
+      // pass through
+    }
+    originalWarn(...args);
+  };
+  const originalError = console.error.bind(console);
+  console.error = (...args: any[]) => {
+    try {
+      const joined = args.map(a => String(a)).join(' ');
+      if (joined.includes('cca-lite.coinbase.com') || joined.includes('Analytics SDK: TypeError: Failed to fetch')) return;
+    } catch (e) {
+      // pass through
+    }
+    originalError(...args);
+  };
+})();
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <WagmiProvider config={config}>
