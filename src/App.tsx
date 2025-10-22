@@ -5,9 +5,11 @@ import AgentDashboard from './AgentDashboard';
 import Home from './Home';
 import UploadAgent from './UploadAgent';
 import { useState, useEffect } from 'react';
+import { useAccount } from 'wagmi';
 
 function App() {
   const [view, setView] = useState<'home'|'dashboard'|'upload'|'my'>('home');
+  const { address, isConnected } = useAccount();
   // Listen for global navigate events so other components can trigger view changes
   useEffect(() => {
     const handler = (e: Event) => {
@@ -31,9 +33,25 @@ function App() {
             <button onClick={() => setView('my')}>My Agents</button>
           </nav>
         </div>
-        <div><ConnectButton /></div>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <button 
+            onClick={() => setView('upload')} 
+            style={{ 
+              padding: '12px 20px', 
+              borderRadius: 999, 
+              background: 'linear-gradient(90deg,#06b6d4,#8b5cf6)', 
+              color: 'white', 
+              border: 'none', 
+              fontWeight: 600,
+              fontSize: '14px'
+            }}
+          >
+            Upload Agent
+          </button>
+          <ConnectButton />
+        </div>
       </div>
-      {view === 'home' && <Home navigate={(v)=>setView(v)} connected={false} />}
+      {view === 'home' && <Home navigate={(v)=>setView(v)} connected={isConnected} walletName={address} />}
       {view === 'dashboard' && <AgentDashboard />}
       {view === 'upload' && <UploadAgent />}
       {view === 'my' && (

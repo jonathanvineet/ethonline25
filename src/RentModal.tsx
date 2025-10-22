@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { getKeyFromLit, createLitAuthSig } from './lib/litHelpers';
 import { ethers } from 'ethers';
+import { useAccount, useContractWrite, usePrepareContractWrite, useContractRead } from 'wagmi';
+import { parseEther } from 'viem';
+import RentAgentABI from './abis/RentAgent.json';
 
 type Props = {
   cid: string;
@@ -37,80 +40,98 @@ const normalizeAddress = (addr?: string) => {
 };
 
 const RentModal: React.FC<Props> = ({ cid, onClose, authAddress, price }) => {
+  const { address } = useAccount();
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [rentStage, setRentStage] = useState<string | null>(null);
+  const [rentSuccess, setRentSuccess] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+
+  // Smart contract configuration
+  const RENT_AGENT_CONTRACT = (import.meta.env.VITE_RENT_AGENT_ADDRESS as string) || '';
+  
+  // Prepare contract write for renting agent
+  const { config: rentConfig } = usePrepareContractWrite({
+    address: RENT_AGENT_CONTRACT as `0x${string}`,
+    abi: RentAgentABI,
+    functionName: 'rentAgent',
+    args: [cid],
+    value: price ? parseEther(price) : undefined,
+    enabled: !!price && !!RENT_AGENT_CONTRACT,
+  });
+  
+  const { write: rentAgent, isLoading: isRenting } = useContractWrite({
+    ...rentConfig,
+    onSuccess: (data) => {
+      console.info('[RentModal] Agent rental successful', { txHash: data.hash });
+      setTxHash(data.hash);
+      setMessage('Payment confirmed on blockchain');
+    },
+    onError: (error) => {
+      console.error('[RentModal] Agent rental failed', error);
+      setError(`Rental failed: ${error.message}`);
+    }
+  });
+
+  // Check if user is already a renter
+  const { data: isRenter } = useContractRead({
+    address: RENT_AGENT_CONTRACT as `0x${string}`,
+    abi: RentAgentABI,
+    functionName: 'isRenter',
+    args: [cid, address || '0x0'],
+    enabled: !!address && !!RENT_AGENT_CONTRACT,
+  });
 
   const handlePayAndFetch = async () => {
     setError(null);
     setMessage(null);
     setLoading(true);
+    setRentStage('Initiating payment...');
+    
     try {
       const stored = JSON.parse(localStorage.getItem('lighthouse_uploads') || '[]') as any[];
       const record = stored.find(r => r.cid === cid);
       if (!record) throw new Error('Record not found');
 
-    const ownerRaw = record.owner || record.accessControlConditions?.[0]?.returnValueTest?.value || '';
-  const owner = normalizeAddress(ownerRaw) || String(ownerRaw).toLowerCase();
-  const requester = normalizeAddress(authAddress || '') || String(authAddress || '').toLowerCase();
-  console.debug('[RentModal] record snapshot', record);
+      // Check if this is a legacy agent that should not be rented
+      if (record.litPersisted === false) {
+        throw new Error('This is a legacy agent that was uploaded before the latest fixes. The owner needs to re-upload it for compatibility. Please ask the agent owner to re-upload the agent.');
+      }
+
+      const ownerRaw = record.owner || record.accessControlConditions?.[0]?.returnValueTest?.value || '';
+      const owner = normalizeAddress(ownerRaw) || String(ownerRaw).toLowerCase();
+      const requester = normalizeAddress(authAddress || '') || String(authAddress || '').toLowerCase();
+      console.debug('[RentModal] record snapshot', record);
       console.debug('[RentModal] owner/requester', { ownerRaw, owner, requester });
 
+      // Check if user is already a renter (owner or has active rental)
       if (owner && owner === requester) {
+        setRentStage('Owner detected — skipping payment');
         setMessage('Owner detected — skipping payment');
+      } else if (isRenter) {
+        setRentStage('Active rental detected — skipping payment');
+        setMessage('You already have an active rental for this agent');
       } else {
         if (!price) throw new Error('This agent requires a rental fee');
-        if (!(window as any).ethereum) throw new Error('No Ethereum provider found');
+        if (!RENT_AGENT_CONTRACT) throw new Error('Smart contract not configured');
 
-        const rentContractAddress = (import.meta.env.VITE_RENT_AGENT_ADDRESS as string) || '';
-
-        if (rentContractAddress) {
-          // Use on-chain contract to perform rent; contract must expose rentAgent(cid) payable
-          // ethers v6: use BrowserProvider
-          const provider = new ethers.BrowserProvider((window as any).ethereum);
-          const signer = await provider.getSigner();
-
-          // Minimal ABI for rentAgent and isRenter
-          const abi = [
-            'function rentAgent(string cid) payable',
-            'function isRenter(string cid, address user) view returns (bool)',
-          ];
-
-          const contract = new ethers.Contract(rentContractAddress, abi, signer);
-          const value = ethToHex(price);
-          setMessage(`Submitting rent tx to contract ${rentContractAddress} for ${price} ETH`);
-          const tx = await contract.rentAgent(cid, { value });
-          setMessage('Transaction submitted — waiting for confirmation');
-          const receipt = await tx.wait();
-          if (!receipt || receipt.status !== 1) throw new Error('Transaction failed');
-          setTxHash(tx.hash);
-          setMessage('Payment confirmed on-chain');
-        } else {
-          // Legacy: direct wallet send to owner
-          const valueHex = ethToHex(price);
-          if (!owner) {
-            throw new Error(`Invalid recipient address for payment: "${ownerRaw}". Upload record may be missing owner or address is malformed`);
-          }
-          const txParams = { from: requester, to: owner, value: valueHex };
-          console.debug('[RentModal] sending transaction with params', txParams);
-          setMessage(`Sending payment ${price} ETH to ${owner} via wallet`);
-          const txHash = await (window as any).ethereum.request({ method: 'eth_sendTransaction', params: [txParams] });
-          setMessage('Payment submitted — waiting for confirmation');
-          // poll for receipt
-          let receipt = null;
-          for (let i = 0; i < 60; i++) {
-            // eslint-disable-next-line no-await-in-loop
-            receipt = await (window as any).ethereum.request({ method: 'eth_getTransactionReceipt', params: [txHash] });
-            if (receipt) break;
-            // eslint-disable-next-line no-await-in-loop
-            await new Promise(r => setTimeout(r, 2000));
-          }
-          if (!receipt) throw new Error('Payment not confirmed in time');
-          setTxHash(txHash as any || null);
-          setMessage('Payment confirmed');
-        }
+        setRentStage('Submitting rental transaction...');
+        setMessage(`Renting agent for ${price} ETH`);
+        
+        // Use wagmi contract write for rental
+        await rentAgent?.();
+        
+        setRentStage('Waiting for confirmation...');
+        setMessage('Transaction submitted — waiting for confirmation');
+        
+        // Wait for transaction confirmation (handled by wagmi onSuccess callback)
+        // The txHash and success message will be set by the onSuccess callback
       }
+
+      // Step 3: Retrieving decryption key from Lit
+      setRentStage('Retrieving decryption key from Lit...');
 
   // No local symmetricKey fallbacks allowed. Only Lit-encrypted keys will be used.
 
@@ -167,24 +188,23 @@ const RentModal: React.FC<Props> = ({ cid, onClose, authAddress, price }) => {
         }
         if (!gotKey) {
           console.debug('[RentModal] No Lit key available for renter after polling');
-          throw new Error('No Lit-encrypted key available for your address. Ask the uploader to persist the key to Lit or use a relayer that can perform the persistence on payment.');
+          // Provide a more helpful error message with recovery options
+          throw new Error('Unable to retrieve decryption key from Lit Protocol. This may be due to:\n\n1. Session expiration issues - try asking the owner to re-upload the agent\n2. Network connectivity issues - try again in a few minutes\n3. Access control conditions not met - ensure you have the required permissions\n\nContact the agent owner for assistance or try the "Recover Key" option if available.');
         }
       }
 
       if (!gotKey) throw new Error('Unable to retrieve symmetric key from Lit after payment/persist attempt');
 
-  const { decryptIpfsFile } = await import('./lib/cryptoHelpers');
-  const decrypted = await decryptIpfsFile(cid, gotKey as string);
-  const url = URL.createObjectURL(decrypted);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `rented_${cid}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-
-      setMessage('Downloaded successfully');
+      // Step 4: Decrypting agent files
+      setRentStage('Decrypting agent files...');
+      
+      const { decryptIpfsFile } = await import('./lib/cryptoHelpers');
+      const decrypted = await decryptIpfsFile(cid, gotKey as string);
+      const url = URL.createObjectURL(decrypted);
+      setDownloadUrl(url);
+      
+      setRentSuccess(true);
+      setMessage('Payment complete. Your agent is ready to download.');
     } catch (err: any) {
       console.error(err);
       setError(err.message || String(err));
@@ -193,38 +213,192 @@ const RentModal: React.FC<Props> = ({ cid, onClose, authAddress, price }) => {
     }
   };
 
+  // Success state
+  if (rentSuccess) {
+    return (
+      <div style={{ padding: 24, marginTop: 12, background: '#f0fdf4', borderRadius: 12, border: '1px solid #10b981' }}>
+        <h4 style={{ color: '#059669', marginTop: 0 }}>✅ Payment complete. Your agent is ready to download.</h4>
+        <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+          <button 
+            onClick={() => {
+              if (downloadUrl) {
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = `rented_${cid}`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(downloadUrl);
+              }
+            }}
+            style={{ 
+              padding: '12px 20px', 
+              background: '#06b6d4', 
+              color: 'white', 
+              border: 'none', 
+              borderRadius: 8,
+              fontWeight: 600
+            }}
+          >
+            Download Agent
+          </button>
+          <button 
+            onClick={() => {
+              // Open in workspace functionality could be implemented here
+              alert('Open in Workspace feature coming soon!');
+            }}
+            style={{ 
+              padding: '12px 20px', 
+              background: '#8b5cf6', 
+              color: 'white', 
+              border: 'none', 
+              borderRadius: 8,
+              fontWeight: 600
+            }}
+          >
+            Open in Workspace
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div style={{ padding: 12, marginTop: 12, background: '#fff', borderRadius: 8 }}>
-      <h4>Rent Agent</h4>
+    <div style={{ padding: 24, marginTop: 12, background: '#fff', borderRadius: 12, border: '1px solid #e6edf6' }}>
+      <h4 style={{ marginTop: 0, marginBottom: 16 }}>Rent Agent</h4>
+      
+      {/* Agent Info */}
       {(() => {
         try {
           const stored = JSON.parse(localStorage.getItem('lighthouse_uploads') || '[]') as any[];
           const r = stored.find(s => s.cid === cid) || {};
-          const ownerRaw = r.owner || r.accessControlConditions?.[0]?.returnValueTest?.value || '';
-          const ownerNorm = ownerRaw ? ownerRaw : '';
           return (
-            <div style={{ marginBottom: 8, fontSize: 13 }}>
-              <strong>Owner:</strong> <span style={{ fontFamily: 'monospace' }}>{ownerNorm}</span>
-              <button onClick={() => { navigator.clipboard.writeText(ownerNorm); }} style={{ marginLeft: 8, padding: '4px 8px' }}>Copy</button>
-              <button onClick={() => window.dispatchEvent(new CustomEvent('retry-persist-key', { detail: { cid } }))} style={{ marginLeft: 8, padding: '4px 8px', background: '#f59e0b', color: '#000', border: 'none', borderRadius: 6 }}>Retry Persist</button>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ marginBottom: 8 }}>
+                <strong>Agent name:</strong> <span style={{ color: '#6b7280' }}>{r.title || cid}</span>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <strong>Price:</strong> <span style={{ color: '#059669', fontWeight: 600 }}>{price || '0.05'} ETH</span>
+              </div>
+              <div>
+                <strong>Recipient wallet address:</strong> 
+                <div style={{ 
+                  marginTop: 4, 
+                  padding: 8, 
+                  background: '#f3f4f6', 
+                  borderRadius: 6, 
+                  fontFamily: 'monospace', 
+                  fontSize: 14,
+                  color: '#374151'
+                }}>
+                  {authAddress || 'Not connected'}
+                </div>
+              </div>
             </div>
           );
         } catch (e) {
           return null;
         }
       })()}
-      <p style={{ marginTop: 0 }}>Pay the uploader's fee for a one-hour rental and receive the decryption key if authorized.</p>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={handlePayAndFetch} disabled={loading} style={{ padding: '8px 12px', background: '#06b6d4', color: '#fff', border: 'none', borderRadius: 6 }}>{loading ? 'Processing...' : `Pay & Rent${price ? ` (${price} ETH)` : ''}`}</button>
-        <button onClick={onClose} style={{ padding: '8px 12px', background: '#9ca3af', color: '#fff', border: 'none', borderRadius: 6 }}>Cancel</button>
-      </div>
-      {txHash && (
-        <div style={{ marginTop: 8, fontSize: 13 }}>
-          <strong>Payment Tx:</strong> <a href={`https://sepolia.etherscan.io/tx/${txHash}`} target='_blank' rel='noreferrer'>{txHash}</a>
+
+      {/* Progress Stages */}
+      {loading && rentStage && (
+        <div style={{ marginBottom: 16, padding: 12, background: '#f0f9ff', borderRadius: 8 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#1e40af' }}>{rentStage}</div>
         </div>
       )}
-      {message && <div style={{ marginTop: 8, color: '#065f46' }}>{message}</div>}
-      {error && <div style={{ marginTop: 8, color: '#991b1b' }}>{error}</div>}
+
+      {/* Action Buttons */}
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button 
+          onClick={handlePayAndFetch} 
+          disabled={loading}
+          style={{ 
+            padding: '12px 20px', 
+            background: loading ? '#9ca3af' : '#06b6d4', 
+            color: '#fff', 
+            border: 'none', 
+            borderRadius: 8,
+            fontWeight: 600,
+            cursor: loading ? 'not-allowed' : 'pointer'
+          }}
+        >
+          {loading ? 'Processing...' : 'Pay & Unlock'}
+        </button>
+        <button 
+          onClick={onClose} 
+          style={{ 
+            padding: '12px 20px', 
+            background: '#9ca3af', 
+            color: '#fff', 
+            border: 'none', 
+            borderRadius: 8,
+            fontWeight: 600
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+
+      {/* Transaction Hash */}
+      {txHash && (
+        <div style={{ marginTop: 16, padding: 12, background: '#f0f9ff', borderRadius: 8 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Payment Transaction:</div>
+          <a 
+            href={`https://sepolia.etherscan.io/tx/${txHash}`} 
+            target='_blank' 
+            rel='noreferrer'
+            style={{ 
+              fontFamily: 'monospace', 
+              fontSize: 12, 
+              color: '#3b82f6',
+              wordBreak: 'break-all'
+            }}
+          >
+            {txHash}
+          </a>
+        </div>
+      )}
+
+      {/* Messages */}
+      {message && (
+        <div style={{ marginTop: 12, padding: 12, background: '#f0fdf4', borderRadius: 8, color: '#065f46' }}>
+          {message}
+        </div>
+      )}
+      
+      {/* Error Fallbacks */}
+      {error && (
+        <div style={{ marginTop: 12, padding: 12, background: '#fef2f2', borderRadius: 8, color: '#991b1b' }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Error:</div>
+          <div style={{ fontSize: 14 }}>{error}</div>
+          {error.includes('Lit') && (
+            <div style={{ marginTop: 8, fontSize: 12 }}>
+              <strong>Fallback:</strong> If Lit fails, try using the owner's Lighthouse recovery key.
+            </div>
+          )}
+          {error.includes('Decryption unavailable') && (
+            <div style={{ marginTop: 8, fontSize: 12 }}>
+              <strong>Note:</strong> Owner may need to recover the key.
+            </div>
+          )}
+          {error.includes('Session expiration') && (
+            <div style={{ marginTop: 8, fontSize: 12 }}>
+              <strong>Solution:</strong> This agent was uploaded with an older version that has compatibility issues. Ask the agent owner to re-upload the agent with the latest version.
+            </div>
+          )}
+          {error.includes('Missing session expiration') && (
+            <div style={{ marginTop: 8, fontSize: 12, padding: 8, background: '#fef3c7', borderRadius: 4 }}>
+              <strong>⚠️ Legacy Agent Detected:</strong> This agent was uploaded before the latest fixes. The owner needs to re-upload it for compatibility.
+            </div>
+          )}
+          {error.includes('legacy agent') && (
+            <div style={{ marginTop: 8, fontSize: 12, padding: 8, background: '#fef3c7', borderRadius: 4 }}>
+              <strong>🚫 Legacy Agent Blocked:</strong> This agent cannot be rented because it was uploaded before the latest fixes. Please ask the agent owner to re-upload it.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

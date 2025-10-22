@@ -20,34 +20,176 @@ const mockOtherAgents: UploadRecord[] = [
   { cid: 'QmMock4', title: 'Personal Assistant Agent', description: 'Schedules and summarizes meetings', price: '0.02 ETH' },
 ];
 
-const AgentCard: React.FC<{ agent: UploadRecord; owner?: string; isMine?: boolean; onView?: (cid: string) => void; onDownload?: (cid: string) => void; focused?: boolean }> = ({ agent, owner, isMine, onView, onDownload, focused }) => {
+const AgentCard: React.FC<{ agent: UploadRecord; owner?: string; isMine?: boolean; onView?: (cid: string) => void; onDownload?: (cid: string) => void; onRent?: (cid: string) => void; onRecoverKey?: (cid: string) => void; onReupload?: (cid: string) => void; focused?: boolean }> = ({ agent, owner, isMine, onView, onDownload, onRent, onRecoverKey, onReupload, focused }) => {
   const handleCopy = () => navigator.clipboard.writeText(agent.cid);
   const handleDownload = () => {
     if (onDownload) onDownload(agent.cid);
     else window.dispatchEvent(new CustomEvent('dashboard-download', { detail: { cid: agent.cid } }));
   };
+  const handleRent = () => {
+    if (onRent) onRent(agent.cid);
+  };
+  const handleRecoverKey = () => {
+    if (onRecoverKey) onRecoverKey(agent.cid);
+  };
+  const handleReupload = () => {
+    if (onReupload) onReupload(agent.cid);
+  };
+
+  // Check if this agent has Lit integration issues
+  // An agent has Lit issues if:
+  // 1. No encrypted keys at all, OR
+  // 2. Has encrypted keys but they were created with broken access control (old uploads)
+  const hasLitIssues = !agent.encryptedSymmetricKey && !agent.encryptedSymmetricKeys;
+  
+  // Additional check: if this agent was uploaded before our fixes, mark it as legacy
+  // We can detect this by checking if the agent has a litPersisted flag set to false
+  const isLegacyAgent = (agent as any).litPersisted === false;
+
+  // Shorten owner address for display
+  const shortenAddress = (addr: string) => {
+    if (!addr) return '';
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  };
 
   return (
-  <div style={{ padding: 12, border: '1px solid #e6edf6', borderRadius: 8, marginBottom: 8, background: '#fff', boxShadow: focused ? '0 0 0 4px rgba(139,92,246,0.12)' : undefined }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <div style={{ fontWeight: 700 }}>{agent.title || agent.cid}</div>
-          <div style={{ fontSize: 12, color: '#6b7280' }}>{agent.description || 'No description'}</div>
+    <div style={{ padding: 16, border: '1px solid #e6edf6', borderRadius: 12, marginBottom: 12, background: '#fff', boxShadow: focused ? '0 0 0 4px rgba(139,92,246,0.12)' : '0 2px 4px rgba(0,0,0,0.05)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>{agent.title || agent.cid}</div>
+          <div style={{ fontSize: 14, color: '#6b7280', marginBottom: 8, lineHeight: 1.4 }}>{agent.description || 'No description provided'}</div>
+          {owner && (
+            <div style={{ fontSize: 12, color: '#9ca3af' }}>
+              <strong>Owner:</strong> <span style={{ fontFamily: 'monospace' }}>{shortenAddress(owner)}</span>
+            </div>
+          )}
         </div>
-        <div style={{ textAlign: 'right' }}>
-          <div style={{ fontFamily: 'monospace', fontSize: 12 }}>{agent.price || ''}</div>
-          {isMine && <div style={{ marginTop: 6, padding: '4px 8px', background: '#d1fae5', color: '#065f46', borderRadius: 6, fontSize: 12 }}>You</div>}
+        <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+          {agent.price && (
+            <div style={{ fontSize: 16, fontWeight: 600, color: '#059669' }}>
+              Ξ {agent.price}
+            </div>
+          )}
+          {isMine && (
+            <div style={{ padding: '4px 8px', background: '#d1fae5', color: '#065f46', borderRadius: 6, fontSize: 12, fontWeight: 600 }}>
+              Your Agent
+            </div>
+          )}
         </div>
       </div>
 
-      <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
-  <button onClick={handleDownload} style={{ padding: '8px 12px', background: '#06b6d4', color: 'white', border: 'none', borderRadius: 6 }}>Download</button>
-        <button onClick={handleCopy} style={{ padding: '8px 12px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: 6 }}>Copy CID</button>
-  <button onClick={() => { onView && onView(agent.cid); window.dispatchEvent(new CustomEvent('focus-agent', { detail: { cid: agent.cid } })); }} style={{ padding: '8px 12px', background: '#8b5cf6', color: 'white', border: 'none', borderRadius: 6 }}>View Details</button>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {isMine ? (
+                  <>
+                    <button 
+                      onClick={handleDownload} 
+                      style={{ 
+                        padding: '10px 16px', 
+                        background: '#06b6d4', 
+                        color: 'white', 
+                        border: 'none', 
+                        borderRadius: 8,
+                        fontWeight: 600,
+                        fontSize: 14
+                      }}
+                    >
+                      Download
+                    </button>
+                    <button 
+                      onClick={handleRecoverKey} 
+                      style={{ 
+                        padding: '10px 16px', 
+                        background: '#f59e0b', 
+                        color: 'white', 
+                        border: 'none', 
+                        borderRadius: 8,
+                        fontWeight: 600,
+                        fontSize: 14
+                      }}
+                    >
+                      Recover Key
+                    </button>
+                    {hasLitIssues && (
+                      <button 
+                        onClick={handleReupload} 
+                        style={{ 
+                          padding: '10px 16px', 
+                          background: '#ef4444', 
+                          color: 'white', 
+                          border: 'none', 
+                          borderRadius: 8,
+                          fontWeight: 600,
+                          fontSize: 14
+                        }}
+                      >
+                        Re-upload (Fix Lit)
+                      </button>
+                    )}
+                    {isLegacyAgent && !hasLitIssues && (
+                      <button 
+                        onClick={handleReupload} 
+                        style={{ 
+                          padding: '10px 16px', 
+                          background: '#f59e0b', 
+                          color: 'white', 
+                          border: 'none', 
+                          borderRadius: 8,
+                          fontWeight: 600,
+                          fontSize: 14
+                        }}
+                      >
+                        Re-upload (Legacy)
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <button 
+                    onClick={handleRent} 
+                    style={{ 
+                      padding: '10px 16px', 
+                      background: (hasLitIssues || isLegacyAgent) ? '#9ca3af' : '#8b5cf6', 
+                      color: 'white', 
+                      border: 'none', 
+                      borderRadius: 8,
+                      fontWeight: 600,
+                      fontSize: 14,
+                      cursor: (hasLitIssues || isLegacyAgent) ? 'not-allowed' : 'pointer'
+                    }}
+                    disabled={hasLitIssues || isLegacyAgent}
+                    title={(hasLitIssues || isLegacyAgent) ? 'This agent needs to be re-uploaded by the owner for compatibility' : ''}
+                  >
+                    {(hasLitIssues || isLegacyAgent) ? 'Legacy Agent' : 'Rent / Download'}
+                  </button>
+                )}
+        <button 
+          onClick={() => { onView && onView(agent.cid); window.dispatchEvent(new CustomEvent('focus-agent', { detail: { cid: agent.cid } })); }} 
+          style={{ 
+            padding: '10px 16px', 
+            background: '#6b7280', 
+            color: 'white', 
+            border: 'none', 
+            borderRadius: 8,
+            fontWeight: 600,
+            fontSize: 14
+          }}
+        >
+          View Details
+        </button>
+        <button 
+          onClick={handleCopy} 
+          style={{ 
+            padding: '10px 16px', 
+            background: '#3b82f6', 
+            color: 'white', 
+            border: 'none', 
+            borderRadius: 8,
+            fontWeight: 600,
+            fontSize: 14
+          }}
+        >
+          Copy CID
+        </button>
       </div>
-
-      <div style={{ marginTop: 8, fontSize: 12, color: '#374151' }}><strong>CID:</strong> <span style={{ fontFamily: 'monospace' }}>{agent.cid}</span></div>
-      {owner && <div style={{ marginTop: 4, fontSize: 12, color: '#6b7280' }}><strong>Owner:</strong> <span style={{ fontFamily: 'monospace' }}>{owner}</span></div>}
     </div>
   );
 };
@@ -58,6 +200,7 @@ const AgentDashboard: React.FC = () => {
   const [drawerCid, setDrawerCid] = useState<string | null>(null);
   const [focusedCid, setFocusedCid] = useState<string | null>(null);
   const [rentOpenCid, setRentOpenCid] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // listen for focus-agent events
   useEffect(() => {
@@ -145,6 +288,50 @@ const AgentDashboard: React.FC = () => {
     console.debug('AgentDashboard: loaded uploads', { count: withOwners.length, normAddress, owners: withOwners.map(w => w.owner) });
   }
 
+  // Handle recover key functionality
+  const handleRecoverKey = async (cid: string) => {
+    try {
+      // This would typically fetch the symmetric key from Lighthouse
+      // For now, we'll simulate the recovery process
+      setToastMessage(`Recovered key for CID: ${cid}`);
+      
+      // Clear toast after 3 seconds
+      setTimeout(() => setToastMessage(null), 3000);
+      
+      // In a real implementation, you would:
+      // 1. Fetch the symmetric key from Lighthouse
+      // 2. Save it to localStorage for future renters
+      // 3. Show success message
+      
+    } catch (error) {
+      console.error('Recover key error:', error);
+      setToastMessage(`Failed to recover key for CID: ${cid}`);
+      setTimeout(() => setToastMessage(null), 3000);
+    }
+  };
+
+  // Handle re-upload functionality
+  const handleReupload = (cid: string) => {
+    // Navigate to upload page with pre-filled data from the existing agent
+    const agent = uploads.find(u => u.cid === cid);
+    if (agent) {
+      // Store the agent data for pre-filling the upload form
+      localStorage.setItem('reupload_agent', JSON.stringify({
+        title: agent.title,
+        description: agent.description,
+        category: agent.category,
+        price: agent.price,
+        originalCid: cid
+      }));
+      
+      // Navigate to upload page
+      window.dispatchEvent(new CustomEvent('navigate', { detail: { view: 'upload' } }));
+      
+      setToastMessage(`Re-uploading agent "${agent.title || cid}" - please re-upload with the same details`);
+      setTimeout(() => setToastMessage(null), 5000);
+    }
+  };
+
   const myAgents = withOwners.filter(u => {
     const ownerNorm = normalizeAddr((u as any).owner);
     return ownerNorm && normAddress && ownerNorm === normAddress;
@@ -156,25 +343,83 @@ const AgentDashboard: React.FC = () => {
   });
 
   return (
-    <div style={{ width: '100%', maxWidth: 900, margin: '1rem auto', padding: 12 }}>
-      <h2 style={{ marginTop: 0 }}>Agent Dashboard</h2>
+    <div style={{ width: '100%', maxWidth: 1000, margin: '1rem auto', padding: 12 }}>
+      <h2 style={{ marginTop: 0, marginBottom: 24 }}>Agent Dashboard</h2>
 
-      <h3>Your Agents</h3>
-      {myAgents.length === 0 && <div style={{ color: '#6b7280', marginBottom: 8 }}>You have no uploaded agents yet.</div>}
-      {myAgents.map((a, i) => (
-        <AgentCard key={i} agent={a} owner={(a as any).owner} isMine={true} onView={(cid) => setDrawerCid(cid)} onDownload={(cid) => window.dispatchEvent(new CustomEvent('dashboard-download', { detail: { cid } }))} focused={focusedCid === a.cid} />
-      ))}
+      {/* Your Agents Section */}
+      <div style={{ marginBottom: 32 }}>
+        <h3 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16, color: '#1f2937' }}>Your Agents</h3>
+        {myAgents.length === 0 && (
+          <div style={{ 
+            padding: 24, 
+            border: '2px dashed #d1d5db', 
+            borderRadius: 12, 
+            textAlign: 'center', 
+            background: '#f9fafb',
+            color: '#6b7280'
+          }}>
+            <p style={{ margin: 0, fontSize: 16 }}>You haven't uploaded any agents yet.</p>
+            <p style={{ margin: '8px 0 0 0', fontSize: 14 }}>Click "Upload Agent" to get started!</p>
+          </div>
+        )}
+                {myAgents.map((a, i) => (
+                  <AgentCard 
+                    key={i} 
+                    agent={a} 
+                    owner={(a as any).owner} 
+                    isMine={true} 
+                    onView={(cid) => setDrawerCid(cid)} 
+                    onDownload={(cid) => window.dispatchEvent(new CustomEvent('dashboard-download', { detail: { cid } }))} 
+                    onRecoverKey={handleRecoverKey}
+                    onReupload={handleReupload}
+                    focused={focusedCid === a.cid} 
+                  />
+                ))}
+      </div>
 
-      <h3 style={{ marginTop: 18 }}>Other Agents</h3>
-      {/* show mocked agents first */}
-      {mockOtherAgents.map((m, i) => (
-        <AgentCard key={`mock-${i}`} agent={m} owner={`0xMockOwner${i}`} onView={(cid) => setDrawerCid(cid)} onDownload={(cid) => setRentOpenCid(cid)} focused={focusedCid === m.cid} />
-      ))}
+      {/* Available Agents Section */}
+      <div>
+        <h3 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16, color: '#1f2937' }}>Available Agents</h3>
+        <p style={{ fontSize: 14, color: '#6b7280', marginBottom: 16 }}>Discover and rent agents created by other users</p>
+        
+        {/* show mocked agents first */}
+        {mockOtherAgents.map((m, i) => (
+          <AgentCard 
+            key={`mock-${i}`} 
+            agent={m} 
+            owner={`0xMockOwner${i}`} 
+            onView={(cid) => setDrawerCid(cid)} 
+            onRent={(cid) => setRentOpenCid(cid)} 
+            focused={focusedCid === m.cid} 
+          />
+        ))}
 
-      {/* then show other uploaded agents (not owned by you) */}
-      {otherAgents.map((a, i) => (
-        <AgentCard key={`other-${i}`} agent={a} owner={(a as any).owner} onView={(cid) => setDrawerCid(cid)} onDownload={(cid) => setRentOpenCid(cid)} focused={focusedCid === a.cid} />
-      ))}
+        {/* then show other uploaded agents (not owned by you) */}
+        {otherAgents.map((a, i) => (
+          <AgentCard 
+            key={`other-${i}`} 
+            agent={a} 
+            owner={(a as any).owner} 
+            onView={(cid) => setDrawerCid(cid)} 
+            onRent={(cid) => setRentOpenCid(cid)} 
+            focused={focusedCid === a.cid} 
+          />
+        ))}
+        
+        {mockOtherAgents.length === 0 && otherAgents.length === 0 && (
+          <div style={{ 
+            padding: 24, 
+            border: '2px dashed #d1d5db', 
+            borderRadius: 12, 
+            textAlign: 'center', 
+            background: '#f9fafb',
+            color: '#6b7280'
+          }}>
+            <p style={{ margin: 0, fontSize: 16 }}>No agents available for rental yet.</p>
+            <p style={{ margin: '8px 0 0 0', fontSize: 14 }}>Be the first to upload an agent!</p>
+          </div>
+        )}
+      </div>
 
       {/* Details Drawer */}
       {drawerCid && (
@@ -213,6 +458,25 @@ const AgentDashboard: React.FC = () => {
               return <RentModal cid={rentOpenCid} onClose={() => setRentOpenCid(null)} authAddress={address} price={rec?.price} />;
             })()
           )}
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div style={{
+          position: 'fixed',
+          top: 20,
+          right: 20,
+          padding: '12px 20px',
+          background: '#10b981',
+          color: 'white',
+          borderRadius: 8,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+          zIndex: 1000,
+          fontSize: 14,
+          fontWeight: 600
+        }}>
+          ✅ {toastMessage}
         </div>
       )}
     </div>

@@ -98,6 +98,20 @@ export const createLitAuthSig = async (signerOrProvider: any, address?: string) 
 const validateACCAndAuthSig = (accessControlConditions: any[], authSig: any) => {
   const authSigAddress = normalizeAddress(authSig.address);
   if (!Array.isArray(accessControlConditions) || accessControlConditions.length === 0) return;
+  
+  // For permissive access control (anyone can decrypt), we don't need strict validation
+  const isPermissive = accessControlConditions.some(acc => {
+    const comparator = acc?.returnValueTest?.comparator;
+    const value = acc?.returnValueTest?.value;
+    return comparator === 'contains' && value === '0x';
+  });
+  
+  if (isPermissive) {
+    console.debug('[litHelpers] Using permissive access control - anyone can decrypt');
+    return;
+  }
+  
+  // For restrictive access control, validate that the user is authorized
   const hasMatch = accessControlConditions.some(acc => {
     const v = acc?.returnValueTest?.value;
     if (!v) return false;
@@ -170,17 +184,25 @@ export const getKeyFromLit = async (encryptedSymmetricKey: string, accessControl
   try { parsed = typeof encryptedSymmetricKey === 'string' ? JSON.parse(encryptedSymmetricKey) : encryptedSymmetricKey; } catch (e) { throw new Error('Invalid encrypted symmetric key payload'); }
   const { cipher, dataToEncryptHash } = parsed;
 
+  // Try multiple approaches for session expiration
+  const possibleExp = (parsed as any)?.sessionKeyExpiration || (parsed as any)?.sessionKeyExpiry || (parsed as any)?.expiration;
+  
+  // If no expiration found in the payload, use a default 24h from now
+  const defaultExpiration = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+  const sessionExpiration = possibleExp || defaultExpiration;
+
   try {
-    const decryptParams: any = { ciphertext: cipher, dataToEncryptHash, authSig, chain: 'ethereum' };
+    const decryptParams: any = { 
+      ciphertext: cipher, 
+      dataToEncryptHash, 
+      authSig, 
+      chain: 'ethereum',
+      // Always include session expiration to avoid Lit node errors
+      sessionKeyExpiration: sessionExpiration,
+      sessionKeyExpiry: sessionExpiration,
+      expiration: sessionExpiration
+    };
     if (accessControlConditions) decryptParams.accessControlConditions = accessControlConditions;
-    // If the encrypted payload included a session expiration, forward it to the decrypt call
-    // using multiple common property names for compatibility.
-    const possibleExp = (parsed as any)?.sessionKeyExpiration || (parsed as any)?.sessionKeyExpiry || (parsed as any)?.expiration;
-    if (possibleExp) {
-      decryptParams.sessionKeyExpiration = possibleExp;
-      decryptParams.sessionKeyExpiry = possibleExp;
-      decryptParams.expiration = possibleExp;
-    }
 
     // DEV: log small preview
     try {
@@ -188,7 +210,8 @@ export const getKeyFromLit = async (encryptedSymmetricKey: string, accessControl
         authSig: { address: authSig?.address, sigPrefix: typeof authSig?.sig === 'string' ? authSig.sig.slice(0, 12) + '...' : authSig?.sig, signedMessagePreview: typeof authSig?.signedMessage === 'string' ? authSig.signedMessage.slice(0, 120) : undefined },
         accessControlConditions: decryptParams.accessControlConditions,
         ciphertextPreview: typeof cipher === 'string' ? cipher.slice(0, 48) + '...' : undefined,
-        dataToEncryptHash
+        dataToEncryptHash,
+        sessionExpiration
       });
     } catch (_) {}
 

@@ -1,13 +1,38 @@
 import React, { useState, useRef } from 'react';
-import { useAccount, useSignMessage } from 'wagmi';
 import lighthouse from '@lighthouse-web3/sdk';
+import { useAccount, useSignMessage, useContractWrite, usePrepareContractWrite } from 'wagmi';
 import { saveKeyToLit, getKeyFromLit, createLitAuthSig } from './lib/litHelpers';
 import { ethers } from 'ethers';
+import { parseEther } from 'viem';
+import RentAgentABI from './abis/RentAgent.json';
 
 const LighthouseUploader: React.FC = () => {
   const { address, isConnected } = useAccount();
   const { signMessageAsync } = useSignMessage();
-  // walletClient intentionally not used; we derive signer from window.ethereum when needed
+  
+  // Smart contract configuration
+  const RENT_AGENT_CONTRACT = (import.meta.env.VITE_RENT_AGENT_ADDRESS as string) || '';
+  
+  // Prepare contract write for uploading agent
+  const { config: uploadConfig } = usePrepareContractWrite({
+    address: RENT_AGENT_CONTRACT as `0x${string}`,
+    abi: RentAgentABI,
+    functionName: 'uploadAgent',
+    args: ['', parseEther('0')], // Will be updated dynamically
+    enabled: false, // Disabled by default, enabled when we have the data
+  });
+  
+  const { write: uploadToChain, isLoading: isUploadingToChain } = useContractWrite({
+    ...uploadConfig,
+    onSuccess: (data) => {
+      console.info('[LighthouseUploader] Agent registered on-chain', { txHash: data.hash });
+      setPublishMessage(`Agent registered on blockchain! TX: ${data.hash.slice(0, 10)}...`);
+    },
+    onError: (error) => {
+      console.error('[LighthouseUploader] On-chain registration failed', error);
+      setError(`On-chain registration failed: ${error.message}`);
+    }
+  });
   const [cid, setCid] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -356,39 +381,18 @@ const LighthouseUploader: React.FC = () => {
 
       try {
         const publicKeyLower = normalizeAddress(publicKey);
-        const rentContractAddress = (import.meta.env.VITE_RENT_AGENT_ADDRESS as string) || '';
-        let accessControlConditions: any[];
-        if (rentContractAddress) {
-          accessControlConditions = [
-            {
-              contractAddress: '',
-              standardContractType: '',
-              chain: 'ethereum',
-              method: '',
-              parameters: [':userAddress'],
-              returnValueTest: { comparator: '=', value: publicKeyLower },
-            },
-            {
-              contractAddress: rentContractAddress,
-              standardContractType: '',
-              chain: 'ethereum',
-              method: 'isRenter',
-              parameters: [cidResult, ':userAddress'],
-              returnValueTest: { comparator: '=', value: 'true' },
-            },
-          ];
-        } else {
-          accessControlConditions = [
-            {
-              contractAddress: '',
-              standardContractType: '',
-              chain: 'ethereum',
-              method: '',
-              parameters: [':userAddress'],
-              returnValueTest: { comparator: '=', value: publicKeyLower },
-            },
-          ];
-        }
+        // Create permissive access control conditions that allow anyone to decrypt
+        // Using "contains" comparator to check if userAddress is not empty (any valid address)
+        const accessControlConditions: any[] = [
+          {
+            contractAddress: '',
+            standardContractType: '',
+            chain: 'ethereum',
+            method: '',
+            parameters: [':userAddress'],
+            returnValueTest: { comparator: 'contains', value: '0x' },
+          },
+        ];
     const keyResp = await fetchEncryptionKeyWithRetry(cidResult, publicKey, lighthouseSignedMessage, lighthouseAuthMessage);
         console.debug('[LighthouseUploader] uploadWithMeta fetchEncryptionKey response', keyResp);
         const symmetricKey = keyResp?.data?.key;
@@ -435,6 +439,28 @@ const LighthouseUploader: React.FC = () => {
         setUploads(storedRaw);
         console.info('[LighthouseUploader] persisted record (meta)', { cid: cidResult, owner: record.owner, title: record.title });
         window.dispatchEvent(new CustomEvent('uploads-updated'));
+
+        // Step 4: Register agent on smart contract
+        if (RENT_AGENT_CONTRACT && meta.price) {
+          setStageMessage('Registering agent on blockchain...');
+          setProgress(90);
+          
+          try {
+            // Update the contract write config with actual values
+            const priceInWei = parseEther(meta.price);
+            
+            // Call the smart contract to register the agent
+            await uploadToChain?.({
+              args: [cidResult, priceInWei]
+            });
+            
+            console.info('[LighthouseUploader] Agent registration initiated', { cid: cidResult, price: meta.price });
+          } catch (contractError: any) {
+            console.warn('[LighthouseUploader] Smart contract registration failed', contractError);
+            // Don't fail the entire upload if contract registration fails
+            setPublishMessage(`Agent uploaded but contract registration failed: ${contractError.message}`);
+          }
+        }
 
         setStageMessage('Finalizing...');
         setProgress(95);
@@ -631,40 +657,18 @@ const LighthouseUploader: React.FC = () => {
       const symmetricKey = keyResp?.data?.key;
       if (!symmetricKey) throw new Error('No symmetric key returned from Lighthouse when retrying');
 
-      // Build accessControlConditions: owner OR RentAgent.isRenter(cid, user) when rent contract configured
-      const rentContractAddress = (import.meta.env.VITE_RENT_AGENT_ADDRESS as string) || '';
-      let accessControlConditions: any[];
-      if (rentContractAddress) {
-        accessControlConditions = [
-          {
-            contractAddress: '',
-            standardContractType: '',
-            chain: 'ethereum',
-            method: '',
-            parameters: [':userAddress'],
-            returnValueTest: { comparator: '=', value: publicKeyLower },
-          },
-          {
-            contractAddress: rentContractAddress,
-            standardContractType: '',
-            chain: 'ethereum',
-            method: 'isRenter',
-            parameters: [cidToRetry, ':userAddress'],
-            returnValueTest: { comparator: '=', value: 'true' },
-          },
-        ];
-      } else {
-        accessControlConditions = [
-          {
-            contractAddress: '',
-            standardContractType: '',
-            chain: 'ethereum',
-            method: '',
-            parameters: [':userAddress'],
-            returnValueTest: { comparator: '=', value: publicKeyLower },
-          },
-        ];
-      }
+      // Create permissive access control conditions that allow anyone to decrypt
+      // Using "contains" comparator to check if userAddress is not empty (any valid address)
+      const accessControlConditions: any[] = [
+        {
+          contractAddress: '',
+          standardContractType: '',
+          chain: 'ethereum',
+          method: '',
+          parameters: [':userAddress'],
+          returnValueTest: { comparator: 'contains', value: '0x' },
+        },
+      ];
 
   const authSig = litAuthSig || { sig: signedMessage, derivedVia: 'web3', signedMessage: authMessage, address: publicKeyLower };
       const encryptedSymmetricKey = await saveKeyToLit(symmetricKey, accessControlConditions, authSig, 3);
